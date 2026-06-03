@@ -77,7 +77,15 @@ public class McpToolRegistrar {
                 continue;
             }
 
-            Object bean = applicationContext.getBean(beanName);
+            Object bean;
+            try {
+                bean = applicationContext.getBean(beanName);
+            } catch (Exception e) {
+                // Skip beans that are not yet fully initialized (e.g. this registrar itself)
+                log.debug("Skipping bean '{}' during tool scan: {}.", beanName, e.getMessage());
+                continue;
+            }
+
             registerToolsFromBean(bean, beanClass);
         }
 
@@ -133,6 +141,7 @@ public class McpToolRegistrar {
      * @return a handler that wraps the reflective invocation
      */
     private ToolHandler createHandler(Object bean, Method method) {
+        method.setAccessible(true);
         return arguments -> {
             try {
                 Object[] args = resolveArguments(method, arguments);
@@ -169,21 +178,34 @@ public class McpToolRegistrar {
 
         Parameter param = parameters[0];
         Class<?> paramType = param.getType();
+        String paramName = param.getName();
 
-        Object resolved = resolveSingleArgument(paramType, arguments);
+        Object resolved = resolveSingleArgument(paramType, arguments, paramName);
         return new Object[]{resolved};
     }
 
     /**
      * Converts a {@link JsonNode} to the expected parameter type.
      */
-    private Object resolveSingleArgument(Class<?> paramType, JsonNode arguments) {
+    private Object resolveSingleArgument(Class<?> paramType, JsonNode arguments, String paramName) {
         if (paramType == JsonNode.class) {
             return arguments;
         }
 
         if (paramType == String.class) {
-            return (arguments == null) ? null : arguments.asText();
+            if (arguments == null) {
+                return null;
+            }
+            // If arguments is an object, try to extract the value by parameter name
+            if (arguments.isObject()) {
+                JsonNode valueNode = arguments.get(paramName);
+                if (valueNode != null) {
+                    return valueNode.asText();
+                }
+                // If parameter name not found, fall back to the whole object as text
+                return arguments.asText();
+            }
+            return arguments.asText();
         }
 
         if (paramType == Map.class) {
