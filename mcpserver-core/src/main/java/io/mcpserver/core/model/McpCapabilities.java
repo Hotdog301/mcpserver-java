@@ -1,5 +1,7 @@
 package io.mcpserver.core.model;
 
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.Objects;
@@ -15,6 +17,7 @@ import java.util.Set;
  *
  * <p>Instances are created via the {@link Builder}.</p>
  */
+@JsonDeserialize(builder = McpCapabilities.Builder.class)
 public final class McpCapabilities {
 
     private final Set<String> tools;
@@ -99,6 +102,7 @@ public final class McpCapabilities {
     /**
      * Builder for creating immutable {@link McpCapabilities} instances.
      */
+    @JsonPOJOBuilder(withPrefix = "")
     public static final class Builder {
 
         private Set<String> tools;

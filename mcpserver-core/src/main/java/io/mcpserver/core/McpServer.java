@@ -320,7 +320,9 @@ public class McpServer {
     public static void registerShutdownHook(McpServer server) {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.err.println("[MCP Server] Received shutdown signal");
-            server.stop();
+            if (server != null) {
+                server.stop();
+            }
         }));
     }
 }
