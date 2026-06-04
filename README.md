@@ -1,4 +1,3 @@
-
 <p align="center">
   <img src="https://img.shields.io/badge/Java-17-blue?logo=openjdk" alt="Java 17">
   <img src="https://img.shields.io/badge/MCP-2025--03--26-purple" alt="MCP Protocol">
@@ -13,6 +12,17 @@
 <p align="center">
   <b>One dependency. Zero config. Your beans become AI tools.</b>
 </p>
+
+<p align="center">
+  <a id="lang-en" href="#" onclick="switchLang('en');return false;" style="text-decoration:none;margin:0 6px;">🇺🇸 English</a>
+  <a id="lang-zh" href="#" onclick="switchLang('zh');return false;" style="text-decoration:none;margin:0 6px;">🇨🇳 中文</a>
+</p>
+
+<style>
+#lang-en:hover, #lang-zh:hover { text-decoration: underline !important; }
+</style>
+
+<div id="en-content">
 
 ---
 
@@ -245,7 +255,16 @@ PRs welcome! This project is in early development. Check [issues](https://github
 
 ---
 
-# 📖 中文文档
+<p align="center">
+  <i>Built for Java developers who want their apps to talk to AI.</i><br>
+  <b>One annotation. Zero ceremony. Infinite tools.</b>
+</p>
+
+</div> <!-- end en-content -->
+
+<div id="zh-content">
+
+---
 
 <p align="center">
   <b>一个依赖。零配置。你的 Bean 就是 AI 工具。</b>
@@ -481,3 +500,40 @@ Apache License 2.0
   <i>为想让应用与 AI 对话的 Java 开发者打造。</i><br>
   <b>一个注解。零仪式。无限工具。</b>
 </p>
+
+</div> <!-- end zh-content -->
+
+<script>
+function switchLang(lang) {
+  var en = document.getElementById('en-content');
+  var zh = document.getElementById('zh-content');
+  var btnEn = document.getElementById('lang-en');
+  var btnZh = document.getElementById('lang-zh');
+  if (lang === 'zh') {
+    en.style.display = 'none';
+    zh.style.display = 'block';
+    btnEn.style.opacity = '0.5';
+    btnZh.style.opacity = '1';
+    btnZh.style.fontWeight = 'bold';
+    btnEn.style.fontWeight = 'normal';
+  } else {
+    en.style.display = 'block';
+    zh.style.display = 'none';
+    btnEn.style.opacity = '1';
+    btnZh.style.opacity = '0.5';
+    btnEn.style.fontWeight = 'bold';
+    btnZh.style.fontWeight = 'normal';
+  }
+  try { localStorage.setItem('mcpserver-lang', lang); } catch(e) {}
+}
+(function() {
+  var saved;
+  try { saved = localStorage.getItem('mcpserver-lang'); } catch(e) {}
+  if (!saved) {
+    var href = window.location.href || '';
+    if (href.indexOf('/tree/main/README_CN') > -1) saved = 'zh';
+    else saved = 'en';
+  }
+  switchLang(saved || 'en');
+})();
+</script>

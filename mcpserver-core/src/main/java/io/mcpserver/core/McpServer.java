@@ -14,6 +14,7 @@ import io.mcpserver.core.transport.StdioServerTransport;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -41,6 +42,7 @@ public class McpServer {
     private final StdioServerTransport transport;
     private final ToolRegistry toolRegistry;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean executorStopped = new AtomicBoolean(false);
     private final JsonRpcSerializer serializer = JsonRpcSerializer.INSTANCE;
     private ExecutorService executor;
 
@@ -51,14 +53,35 @@ public class McpServer {
     /**
      * Creates a new MCP server with the given name and version.
      *
-     * @param serverName   the name of this server
-     * @param serverVersion the version of this server
+     * @param serverName   the name of this server (must not be null or blank)
+     * @param serverVersion the version of this server (must not be null or blank)
+     * @throws NullPointerException     if serverName or serverVersion is null
+     * @throws IllegalArgumentException if serverName or serverVersion is blank
      */
     public McpServer(String serverName, String serverVersion) {
+        this(serverName, serverVersion, new ToolRegistry());
+    }
+
+    /**
+     * Creates a new MCP server with the given name, version, and shared tool registry.
+     *
+     * @param serverName   the name of this server (must not be null or blank)
+     * @param serverVersion the version of this server (must not be null or blank)
+     * @param toolRegistry the shared tool registry to use
+     * @throws NullPointerException     if serverName, serverVersion, or toolRegistry is null
+     * @throws IllegalArgumentException if serverName or serverVersion is blank
+     */
+    public McpServer(String serverName, String serverVersion, ToolRegistry toolRegistry) {
         this.transport = new StdioServerTransport();
-        this.toolRegistry = new ToolRegistry();
-        this.serverName = serverName;
-        this.serverVersion = serverVersion;
+        this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
+        this.serverName = Objects.requireNonNull(serverName, "serverName must not be null");
+        this.serverVersion = Objects.requireNonNull(serverVersion, "serverVersion must not be null");
+        if (serverName.isBlank()) {
+            throw new IllegalArgumentException("serverName must not be blank");
+        }
+        if (serverVersion.isBlank()) {
+            throw new IllegalArgumentException("serverVersion must not be blank");
+        }
     }
 
     /**
@@ -122,21 +145,11 @@ public class McpServer {
 
     /**
      * Gracefully stops the server.
+     * Idempotent — safe to call multiple times or while {@link #run()} is executing.
      */
     public void stop() {
         if (running.compareAndSet(true, false)) {
             transport.stop();
-            if (executor != null) {
-                executor.shutdown();
-                try {
-                    if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                        executor.shutdownNow();
-                    }
-                } catch (InterruptedException e) {
-                    executor.shutdownNow();
-                    Thread.currentThread().interrupt();
-                }
-            }
         }
     }
 
@@ -294,10 +307,9 @@ public class McpServer {
     }
 
     private void shutdown() {
-        running.set(false);
         transport.stop();
 
-        if (executor != null) {
+        if (executor != null && executorStopped.compareAndSet(false, true)) {
             executor.shutdown();
             try {
                 if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {

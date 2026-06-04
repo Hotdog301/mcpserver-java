@@ -66,36 +66,44 @@ class McpServerTest {
         }
 
         @Test
-        @DisplayName("Should create server with null name")
-        void shouldCreateWithNullName() {
-            server = new McpServer(null, "1.0.0");
-
-            assertThat(server).isNotNull();
-            // Server should not crash with null name
+        @DisplayName("Should throw NullPointerException for null name")
+        void shouldThrowOnNullName() {
+            assertThatThrownBy(() -> new McpServer(null, "1.0.0"))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("serverName");
         }
 
         @Test
-        @DisplayName("Should create server with empty name")
-        void shouldCreateWithEmptyName() {
-            server = new McpServer("", "1.0.0");
-
-            assertThat(server).isNotNull();
+        @DisplayName("Should throw IllegalArgumentException for blank name")
+        void shouldThrowOnBlankName() {
+            assertThatThrownBy(() -> new McpServer("  ", "1.0.0"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("serverName");
         }
 
         @Test
-        @DisplayName("Should create server with null version")
-        void shouldCreateWithNullVersion() {
-            server = new McpServer("TestServer", null);
-
-            assertThat(server).isNotNull();
+        @DisplayName("Should throw NullPointerException for null version")
+        void shouldThrowOnNullVersion() {
+            assertThatThrownBy(() -> new McpServer("TestServer", null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("serverVersion");
         }
 
         @Test
-        @DisplayName("Should create server with empty version")
-        void shouldCreateWithEmptyVersion() {
-            server = new McpServer("TestServer", "");
+        @DisplayName("Should throw IllegalArgumentException for blank version")
+        void shouldThrowOnBlankVersion() {
+            assertThatThrownBy(() -> new McpServer("TestServer", ""))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("serverVersion");
+        }
 
-            assertThat(server).isNotNull();
+        @Test
+        @DisplayName("Should throw NullPointerException for null toolRegistry")
+        void shouldThrowOnNullToolRegistry() {
+            ToolRegistry nullRegistry = null;
+            assertThatThrownBy(() -> new McpServer("TestServer", "1.0.0", nullRegistry))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessageContaining("toolRegistry");
         }
     }
 

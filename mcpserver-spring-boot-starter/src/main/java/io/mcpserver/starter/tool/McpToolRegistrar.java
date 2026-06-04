@@ -44,10 +44,10 @@ import java.util.Map;
 public class McpToolRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolRegistrar.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ApplicationContext applicationContext;
     private final ToolRegistry toolRegistry;
-    private final ObjectMapper objectMapper;
 
     /**
      * Creates a new registrar.
@@ -58,7 +58,6 @@ public class McpToolRegistrar {
     public McpToolRegistrar(ApplicationContext applicationContext, ToolRegistry toolRegistry) {
         this.applicationContext = applicationContext;
         this.toolRegistry = toolRegistry;
-        this.objectMapper = new ObjectMapper();
     }
 
     /**
@@ -212,14 +211,14 @@ public class McpToolRegistrar {
             if (arguments == null) {
                 return null;
             }
-            return objectMapper.convertValue(arguments, new TypeReference<Map<String, Object>>() {});
+            return MAPPER.convertValue(arguments, new TypeReference<Map<String, Object>>() {});
         }
 
         // For any other type, attempt Jackson deserialization
         if (arguments == null) {
             return null;
         }
-        return objectMapper.convertValue(arguments, paramType);
+        return MAPPER.convertValue(arguments, paramType);
     }
 
     /**
@@ -259,6 +258,6 @@ public class McpToolRegistrar {
         }
 
         // Fall back to Jackson serialization for complex types
-        return objectMapper.valueToTree(result);
+        return MAPPER.valueToTree(result);
     }
 }

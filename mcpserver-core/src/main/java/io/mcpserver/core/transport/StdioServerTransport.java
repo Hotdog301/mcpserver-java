@@ -28,7 +28,6 @@ public class StdioServerTransport {
     public StdioServerTransport() {
         this.reader = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.UTF_8));
-        this.running = false;
     }
 
     /**
