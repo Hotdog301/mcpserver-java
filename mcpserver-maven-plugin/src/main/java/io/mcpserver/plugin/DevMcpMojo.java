@@ -24,8 +24,8 @@ import java.io.IOException;
  *
  * <p>Tools are registered programmatically before the server starts. Add
  * {@code @Component} or plain Java classes that extend the server setup via
- * the {@link #getToolRegistry()} method, or subclass this Mojo to provide
- * custom tool registration logic.</p>
+ * the {@link #registerDevTools(ToolRegistry)} method, or subclass this Mojo to
+ * provide custom tool registration logic.</p>
  *
  * <p>Usage:</p>
  * <pre>{@code
