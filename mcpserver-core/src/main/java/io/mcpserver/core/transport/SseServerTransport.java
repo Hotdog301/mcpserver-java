@@ -54,6 +54,16 @@ public class SseServerTransport {
     private volatile String currentSessionId;
 
     /**
+     * Callback invoked when a new session is established.
+     * Used by tests to synchronize on session state.
+     */
+    private volatile Runnable onSessionEstablished;
+
+    public void setOnSessionEstablished(Runnable callback) {
+        this.onSessionEstablished = callback;
+    }
+
+    /**
      * Creates a new SSE server transport.
      *
      * @param port           the HTTP port to bind to
@@ -140,11 +150,12 @@ public class SseServerTransport {
 
     /**
      * Returns the port the HTTP server is bound to.
+     * If started with port 0, returns the actual OS-assigned port.
      *
      * @return the port number
      */
     public int getPort() {
-        return port;
+        return server.getAddress().getPort();
     }
 
     /**
@@ -180,7 +191,6 @@ public class SseServerTransport {
         exchange.getResponseHeaders().add("Cache-Control", "no-cache");
         exchange.getResponseHeaders().add("Connection", "keep-alive");
         exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
-        exchange.sendResponseHeaders(200, 0);
 
         OutputStream out = exchange.getResponseBody();
         SseConnection conn = new SseConnection(sessionId, out);
@@ -198,9 +208,16 @@ public class SseServerTransport {
         currentConnection = conn;
         currentSessionId = sessionId;
 
+        Runnable listener = onSessionEstablished;
+        if (listener != null) {
+            listener.run();
+        }
+
         System.err.println("[MCP SSE Transport] Client connected (session=" + sessionId + ")");
 
-        // Send the endpoint event so the client knows where to POST messages
+        // Send 200 OK and the endpoint event
+        exchange.sendResponseHeaders(200, 0);
+
         conn.send("event: endpoint\ndata: " + messageUri + "\n\n");
 
         // Block until the connection closes
@@ -211,8 +228,8 @@ public class SseServerTransport {
             byte[] buf = new byte[4096];
             while (running.get()) {
                 int n = input.read(buf);
-                if (n < 0) {
-                    break; // Client closed
+                if (n <= 0) {
+                    break; // Client closed or stream interrupted
                 }
             }
         } catch (IOException ignored) {
@@ -236,7 +253,20 @@ public class SseServerTransport {
      * Handles a POST message to the message endpoint (POST /message).
      */
     private void handleMessagePost(HttpExchange exchange) throws IOException {
-        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+        String method = exchange.getRequestMethod();
+
+        // Handle CORS preflight
+        if ("OPTIONS".equalsIgnoreCase(method)) {
+            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
+            exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
+            exchange.getResponseHeaders().add("Access-Control-Max-Age", "86400");
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+            return;
+        }
+
+        if (!"POST".equalsIgnoreCase(method)) {
             exchange.sendResponseHeaders(405, -1);
             exchange.close();
             return;

@@ -463,6 +463,7 @@ public class McpServer {
     /**
      * Extracts the request id from a JSON-RPC request node.
      * Per JSON-RPC 2.0, id can be a number, string, or null.
+     * For numeric IDs, prefers long representation to avoid precision loss.
      */
     private static Object extractId(JsonNode idNode) {
         if (idNode == null || idNode.isNull()) {
@@ -472,7 +473,12 @@ public class McpServer {
             return idNode.asText();
         }
         if (idNode.isNumber()) {
-            return idNode.numberValue();
+            // Use asLong() for integral numbers to avoid precision loss;
+            // fall back to decimalValue() for floats.
+            if (idNode.isIntegralNumber()) {
+                return idNode.asLong();
+            }
+            return idNode.decimalValue();
         }
         return idNode.asText();
     }
