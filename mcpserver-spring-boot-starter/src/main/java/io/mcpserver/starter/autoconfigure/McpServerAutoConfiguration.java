@@ -1,8 +1,6 @@
 package io.mcpserver.starter.autoconfigure;
 
 import io.mcpserver.core.McpServer;
-import io.mcpserver.core.model.McpTool;
-import io.mcpserver.core.tool.ToolDefinition;
 import io.mcpserver.core.tool.ToolRegistry;
 import io.mcpserver.starter.runner.McpServerRunner;
 import io.mcpserver.starter.tool.McpToolRegistrar;
@@ -63,8 +61,8 @@ public class McpServerAutoConfiguration {
     }
 
     /**
-     * Creates the {@link McpServer} bean, copying already-registered tools
-     * from the shared registry into the server's internal registry.
+     * Creates the {@link McpServer} bean that uses the shared {@link ToolRegistry}
+     * for tool discovery and invocation.
      *
      * <p>This bean is conditional &mdash; if the user provides their own
      * {@link McpServer} bean, this one will not be created.</p>
@@ -76,15 +74,7 @@ public class McpServerAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(McpServer.class)
     public McpServer mcpServer(ToolRegistry registry, McpServerProperties properties) {
-        McpServer server = new McpServer(properties.getName(), properties.getVersion());
-
-        // Copy tools from the shared registry into the server's internal registry
-        for (McpTool tool : registry.listTools()) {
-            ToolDefinition def = registry.getTool(tool.name());
-            if (def != null) {
-                server.registerTool(tool.name(), tool.description(), tool.inputSchema(), def.handler());
-            }
-        }
+        McpServer server = new McpServer(properties.getName(), properties.getVersion(), registry);
 
         log.info("Created McpServer '{}' v{} with {} tool(s)",
                 properties.getName(), properties.getVersion(), registry.toolCount());

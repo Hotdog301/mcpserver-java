@@ -1,7 +1,9 @@
 package io.mcpserver.core.transport;
 
 import java.io.BufferedReader;
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
@@ -27,7 +29,7 @@ public class StdioServerTransport {
      */
     public StdioServerTransport() {
         this.reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8));
+                new InputStreamReader(noCloseStdin(), StandardCharsets.UTF_8));
     }
 
     /**
@@ -50,6 +52,20 @@ public class StdioServerTransport {
         } catch (IOException e) {
             System.err.println("Error closing stdin reader: " + e.getMessage());
         }
+    }
+
+    /**
+     * Returns a wrapper around {@link System#in} that ignores close requests,
+     * so that stopping the transport does not permanently close stdin for the
+     * entire JVM (which would break tests, hot-restart, etc.).
+     */
+    private static InputStream noCloseStdin() {
+        return new FilterInputStream(System.in) {
+            @Override
+            public void close() {
+                // Intentionally empty — do not close System.in.
+            }
+        };
     }
 
     /**

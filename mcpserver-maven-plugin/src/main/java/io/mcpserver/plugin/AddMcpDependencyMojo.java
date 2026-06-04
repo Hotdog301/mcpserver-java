@@ -1,10 +1,21 @@
 package io.mcpserver.plugin;
 
+import org.apache.maven.model.Dependency;
+import org.apache.maven.model.Model;
+import org.apache.maven.model.io.xpp3.MavenXpp3Reader;
+import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
+import org.codehaus.plexus.util.xml.pull.XmlPullParserException;
+
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Maven Mojo that adds the {@code mcpserver-spring-boot-starter} dependency to
@@ -58,6 +69,7 @@ public class AddMcpDependencyMojo extends AbstractMojo {
         getLog().info("Checking for MCP server dependency in project: "
                 + project.getArtifactId());
 
+        // Check if the dependency is already present
         boolean alreadyPresent = project.getDependencies().stream()
                 .anyMatch(d -> dependencyGroupId.equals(d.getGroupId())
                         && dependencyArtifactId.equals(d.getArtifactId()));
@@ -68,18 +80,39 @@ public class AddMcpDependencyMojo extends AbstractMojo {
             return;
         }
 
-        getLog().info("");
-        getLog().info("Add the following dependency to your pom.xml:");
-        getLog().info("----------------------------------------------");
-        getLog().info("<dependency>");
-        getLog().info("    <groupId>" + dependencyGroupId + "</groupId>");
-        getLog().info("    <artifactId>" + dependencyArtifactId + "</artifactId>");
-        getLog().info("    <version>" + dependencyVersion + "</version>");
-        getLog().info("</dependency>");
-        getLog().info("----------------------------------------------");
-        getLog().info("");
+        // Locate the POM file
+        File pomFile = project.getFile();
+        if (pomFile == null || !pomFile.exists()) {
+            throw new MojoExecutionException("Cannot locate pom.xml for project: "
+                    + project.getArtifactId());
+        }
 
-        getLog().warn("Automatic POM modification is not yet implemented.");
-        getLog().warn("Please manually add the dependency shown above to your pom.xml.");
+        // Read the POM model
+        Model model;
+        try (FileReader reader = new FileReader(pomFile)) {
+            MavenXpp3Reader xpp3Reader = new MavenXpp3Reader();
+            model = xpp3Reader.read(reader);
+        } catch (IOException | XmlPullParserException e) {
+            throw new MojoExecutionException("Failed to read pom.xml: " + e.getMessage(), e);
+        }
+
+        // Create and add the dependency
+        Dependency dependency = new Dependency();
+        dependency.setGroupId(dependencyGroupId);
+        dependency.setArtifactId(dependencyArtifactId);
+        dependency.setVersion(dependencyVersion);
+        model.addDependency(dependency);
+
+        // Write the modified POM back
+        try (FileWriter writer = new FileWriter(pomFile, StandardCharsets.UTF_8)) {
+            MavenXpp3Writer xpp3Writer = new MavenXpp3Writer();
+            xpp3Writer.write(writer, model);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to write pom.xml: " + e.getMessage(), e);
+        }
+
+        getLog().info("Successfully added dependency " + dependencyGroupId + ":"
+                + dependencyArtifactId + ":" + dependencyVersion + " to " + pomFile.getName());
+        getLog().info("Please review the changes before committing.");
     }
 }

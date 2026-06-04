@@ -641,7 +641,7 @@ class JsonRpcSerializerTest {
             String json = serializer.serialize(original);
             JsonNode parsed = serializer.parseMessage(json);
 
-            assertThat(parsed.get("id").asLong()).isEqualTo(original.id());
+            assertThat(String.valueOf(parsed.get("id").asLong())).isEqualTo(String.valueOf(original.id()));
             assertThat(parsed.get("method").asText()).isEqualTo(original.method());
             assertThat(parsed.get("params").get("name").asText()).isEqualTo("test-tool");
         }
@@ -656,7 +656,7 @@ class JsonRpcSerializerTest {
             String json = serializer.serialize(original);
             JsonNode parsed = serializer.parseMessage(json);
 
-            assertThat(parsed.get("id").asLong()).isEqualTo(original.id());
+            assertThat(String.valueOf(parsed.get("id").asLong())).isEqualTo(String.valueOf(original.id()));
             assertThat(parsed.has("result")).isTrue();
             assertThat(parsed.has("error")).isFalse();
         }
@@ -670,7 +670,7 @@ class JsonRpcSerializerTest {
             String json = serializer.serialize(original);
             JsonNode parsed = serializer.parseMessage(json);
 
-            assertThat(parsed.get("id").asLong()).isEqualTo(original.id());
+            assertThat(String.valueOf(parsed.get("id").asLong())).isEqualTo(String.valueOf(original.id()));
             assertThat(parsed.has("error")).isTrue();
             assertThat(parsed.get("error").get("code").asInt()).isEqualTo(-32603);
         }

@@ -33,6 +33,18 @@ public interface McpConstants {
     /** Method name for invoking a tool. */
     String METHOD_TOOLS_CALL = "tools/call";
 
+    /** Method name for listing available resources. */
+    String METHOD_RESOURCES_LIST = "resources/list";
+
+    /** Method name for reading a resource by URI. */
+    String METHOD_RESOURCES_READ = "resources/read";
+
+    /** Method name for listing available prompts. */
+    String METHOD_PROMPTS_LIST = "prompts/list";
+
+    /** Method name for retrieving a prompt by name. */
+    String METHOD_PROMPTS_GET = "prompts/get";
+
     /** Method name for the initialized notification sent by the client. */
     String METHOD_NOTIFICATIONS_INITIALIZED = "notifications/initialized";
 }

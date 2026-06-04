@@ -15,6 +15,8 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -24,8 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Main MCP server class that orchestrates JSON-RPC communication over stdio transport.
  *
  * <p>This server implements the Model Context Protocol (MCP), enabling LLM clients
- * (such as Claude Desktop) to discover and invoke tools exposed by this application.
- * Communication follows JSON-RPC 2.0 over stdin/stdout.</p>
+ * (such as Claude Desktop) to discover and invoke tools, resources, and prompts exposed
+ * by this application. Communication follows JSON-RPC 2.0 over stdin/stdout.</p>
  *
  * <p>Lifecycle:</p>
  * <ol>
@@ -33,7 +35,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>Client sends {@code initialize} request</li>
  *   <li>Server responds with capabilities and server info</li>
  *   <li>Client sends {@code notifications/initialized}</li>
- *   <li>Client may query {@code tools/list} and invoke {@code tools/call}</li>
+ *   <li>Client may query {@code tools/list}, {@code resources/list}, {@code prompts/list}
+ *       and invoke {@code tools/call}, {@code resources/read}, {@code prompts/get}</li>
  *   <li>Connection ends when stdin closes or server shuts down</li>
  * </ol>
  */
@@ -44,6 +47,8 @@ public class McpServer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean executorStopped = new AtomicBoolean(false);
     private final JsonRpcSerializer serializer = JsonRpcSerializer.INSTANCE;
+    private final ConcurrentMap<String, ResourceDefinition> resources = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, PromptDefinition> prompts = new ConcurrentHashMap<>();
     private ExecutorService executor;
 
     /** Server metadata sent during initialization. */
@@ -106,6 +111,36 @@ public class McpServer {
     }
 
     /**
+     * Registers a resource with the server.
+     *
+     * @param uri         the resource URI
+     * @param name        the human-readable name
+     * @param description an optional description (may be null)
+     * @param mimeType    the MIME type (may be null, defaults to text/plain)
+     * @param handler     the handler that returns the resource content as text
+     */
+    public void registerResource(String uri, String name, String description, String mimeType, ToolHandler handler) {
+        Objects.requireNonNull(uri, "uri must not be null");
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(handler, "handler must not be null");
+        resources.put(uri, new ResourceDefinition(uri, name, description,
+                mimeType != null ? mimeType : "text/plain", handler));
+    }
+
+    /**
+     * Registers a prompt with the server.
+     *
+     * @param name        the prompt name
+     * @param description an optional description (may be null)
+     * @param handler     the handler that returns the prompt messages
+     */
+    public void registerPrompt(String name, String description, ToolHandler handler) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(handler, "handler must not be null");
+        prompts.put(name, new PromptDefinition(name, description, handler));
+    }
+
+    /**
      * Starts the MCP server and begins processing messages.
      *
      * <p>This method blocks until the server stops (stdin closes or stop() is called).
@@ -120,32 +155,33 @@ public class McpServer {
 
         transport.start();
         executor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "mcp-server-worker");
+            Thread t = new Thread(r, "mcp-msg-worker");
             t.setDaemon(true);
             return t;
         });
 
-        System.err.println("[MCP Server] Started: " + serverName + " v" + serverVersion);
-        System.err.println("[MCP Server] Registered tools: " + toolRegistry.toolCount());
+        System.err.println("[MCP Server] " + serverName + " v" + serverVersion + " started");
+        System.err.println("[MCP Server] Registered " + toolRegistry.toolCount() + " tools, "
+                + resources.size() + " resources, " + prompts.size() + " prompts");
 
-        // Main message loop
-        while (running.get()) {
-            String line = transport.readLine();
-            if (line == null || line.isEmpty()) {
-                // EOF — client disconnected
-                break;
+        try {
+            String line;
+            while (running.get() && (line = transport.readLine()) != null) {
+                if (!running.get()) {
+                    break;
+                }
+
+                final String requestLine = line;
+                executor.submit(() -> processMessage(requestLine));
             }
-
-            final String requestLine = line;
-            executor.submit(() -> processMessage(requestLine));
+        } finally {
+            shutdown();
         }
-
-        shutdown();
     }
 
     /**
      * Gracefully stops the server.
-     * Idempotent — safe to call multiple times or while {@link #run()} is executing.
+     * Idempotent — safe to call multiple times or while {@link #start()} is executing.
      */
     public void stop() {
         if (running.compareAndSet(true, false)) {
@@ -185,8 +221,14 @@ public class McpServer {
     }
 
     private void handleRequest(JsonNode requestNode) throws IOException {
-        String method = requestNode.get("method").asText();
-        long id = requestNode.get("id").asLong();
+        JsonNode methodNode = requestNode.get("method");
+        if (methodNode == null) {
+            Object id = extractId(requestNode.get("id"));
+            sendErrorResponse(id, -32600, "Invalid Request: missing 'method'", null);
+            return;
+        }
+        String method = methodNode.asText();
+        Object id = extractId(requestNode.get("id"));
         JsonNode params = requestNode.has("params") ? requestNode.get("params") : null;
 
         switch (method) {
@@ -198,6 +240,18 @@ public class McpServer {
                 break;
             case McpConstants.METHOD_TOOLS_CALL:
                 handleToolsCall(id, params);
+                break;
+            case McpConstants.METHOD_RESOURCES_LIST:
+                handleResourcesList(id);
+                break;
+            case McpConstants.METHOD_RESOURCES_READ:
+                handleResourcesRead(id, params);
+                break;
+            case McpConstants.METHOD_PROMPTS_LIST:
+                handlePromptsList(id);
+                break;
+            case McpConstants.METHOD_PROMPTS_GET:
+                handlePromptsGet(id, params);
                 break;
             default:
                 sendErrorResponse(id, -32601, "Method not found: " + method, null);
@@ -212,7 +266,7 @@ public class McpServer {
         }
     }
 
-    private void handleInitialize(long id, JsonNode params) throws IOException {
+    private void handleInitialize(Object id, JsonNode params) throws IOException {
         InitializeRequestParams initParams;
         if (params != null) {
             initParams = serializer.deserialize(params.toString(), InitializeRequestParams.class);
@@ -227,20 +281,22 @@ public class McpServer {
 
         McpCapabilities capabilities = McpCapabilities.builder()
                 .addTool("built-in")
+                .addResource("static")
+                .addPrompt("static")
                 .build();
 
         InitializeResultParams resultParams = new InitializeResultParams(
                 McpConstants.MCP_PROTOCOL_VERSION,
                 capabilities,
                 Map.of("name", serverName, "version", serverVersion),
-                "MCP Server is ready. Use tools/list to discover available tools."
+                "MCP Server is ready. Use tools/list, resources/list, or prompts/list to discover capabilities."
         );
 
         sendResultResponse(id, resultParams);
         System.err.println("[MCP Server] Initialized with protocol " + initParams.protocolVersion());
     }
 
-    private void handleToolsList(long id) throws IOException {
+    private void handleToolsList(Object id) throws IOException {
         List<McpTool> tools = toolRegistry.listTools();
         ObjectNode result = JsonNodeFactory.instance.objectNode();
         ArrayNode toolsArray = result.putArray("tools");
@@ -260,7 +316,7 @@ public class McpServer {
         System.err.println("[MCP Server] Listed " + tools.size() + " tools");
     }
 
-    private void handleToolsCall(long id, JsonNode params) throws IOException {
+    private void handleToolsCall(Object id, JsonNode params) throws IOException {
         if (params == null || !params.has("name")) {
             sendErrorResponse(id, -32602, "Missing required parameter: name", null);
             return;
@@ -294,16 +350,131 @@ public class McpServer {
         }
     }
 
-    private void sendResultResponse(long id, Object result) throws IOException {
+    private void handleResourcesList(Object id) throws IOException {
+        ObjectNode result = JsonNodeFactory.instance.objectNode();
+        ArrayNode resourcesArray = result.putArray("resources");
+
+        for (ResourceDefinition res : resources.values()) {
+            ObjectNode resNode = resourcesArray.addObject();
+            resNode.put("uri", res.uri());
+            resNode.put("name", res.name());
+            if (res.description() != null) {
+                resNode.put("description", res.description());
+            }
+            resNode.put("mimeType", res.mimeType());
+        }
+
+        sendResultResponse(id, result);
+        System.err.println("[MCP Server] Listed " + resources.size() + " resources");
+    }
+
+    private void handleResourcesRead(Object id, JsonNode params) throws IOException {
+        if (params == null || !params.has("uri")) {
+            sendErrorResponse(id, -32602, "Missing required parameter: uri", null);
+            return;
+        }
+
+        String uri = params.get("uri").asText();
+        ResourceDefinition resDef = resources.get(uri);
+        if (resDef == null) {
+            sendErrorResponse(id, -32602, "Unknown resource: " + uri, null);
+            return;
+        }
+
+        try {
+            JsonNode contentData = resDef.handler().execute(params);
+
+            ObjectNode result = JsonNodeFactory.instance.objectNode();
+            ArrayNode contents = result.putArray("contents");
+            ObjectNode contentItem = contents.addObject();
+            contentItem.put("uri", uri);
+            contentItem.put("mimeType", resDef.mimeType());
+            contentItem.set("text", contentData != null
+                    ? contentData : JsonNodeFactory.instance.textNode(""));
+
+            sendResultResponse(id, result);
+        } catch (Exception e) {
+            sendErrorResponse(id, -32603, "Resource read failed: " + e.getMessage(), null);
+        }
+    }
+
+    private void handlePromptsList(Object id) throws IOException {
+        ObjectNode result = JsonNodeFactory.instance.objectNode();
+        ArrayNode promptsArray = result.putArray("prompts");
+
+        for (PromptDefinition prompt : prompts.values()) {
+            ObjectNode promptNode = promptsArray.addObject();
+            promptNode.put("name", prompt.name());
+            if (prompt.description() != null) {
+                promptNode.put("description", prompt.description());
+            }
+            // Arguments can be added later when the MCP prompt argument spec is fully supported
+        }
+
+        sendResultResponse(id, result);
+        System.err.println("[MCP Server] Listed " + prompts.size() + " prompts");
+    }
+
+    private void handlePromptsGet(Object id, JsonNode params) throws IOException {
+        if (params == null || !params.has("name")) {
+            sendErrorResponse(id, -32602, "Missing required parameter: name", null);
+            return;
+        }
+
+        String promptName = params.get("name").asText();
+        PromptDefinition promptDef = prompts.get(promptName);
+        if (promptDef == null) {
+            sendErrorResponse(id, -32602, "Unknown prompt: " + promptName, null);
+            return;
+        }
+
+        try {
+            JsonNode messages = promptDef.handler().execute(params);
+
+            ObjectNode result = JsonNodeFactory.instance.objectNode();
+            if (messages != null && messages.isArray()) {
+                result.set("messages", messages);
+            } else {
+                ArrayNode messagesArray = result.putArray("messages");
+                ObjectNode messageItem = messagesArray.addObject();
+                messageItem.put("role", "assistant");
+                messageItem.set("content", messages != null
+                        ? messages : JsonNodeFactory.instance.textNode(""));
+            }
+
+            sendResultResponse(id, result);
+        } catch (Exception e) {
+            sendErrorResponse(id, -32603, "Prompt get failed: " + e.getMessage(), null);
+        }
+    }
+
+    private void sendResultResponse(Object id, Object result) throws IOException {
         JsonNode resultNode = serializer.serializeToNode(result);
         JsonRpcResponse response = JsonRpcResponse.success(id, resultNode);
         transport.sendMessage(response);
     }
 
-    private void sendErrorResponse(long id, int code, String message, JsonNode data) throws IOException {
+    private void sendErrorResponse(Object id, int code, String message, JsonNode data) throws IOException {
         JsonRpcError error = new JsonRpcError(code, message, data);
         JsonRpcResponse response = JsonRpcResponse.error(id, error);
         transport.sendMessage(response);
+    }
+
+    /**
+     * Extracts the request id from a JSON-RPC request node.
+     * Per JSON-RPC 2.0, id can be a number, string, or null.
+     */
+    private static Object extractId(JsonNode idNode) {
+        if (idNode == null || idNode.isNull()) {
+            return null;
+        }
+        if (idNode.isTextual()) {
+            return idNode.asText();
+        }
+        if (idNode.isNumber()) {
+            return idNode.numberValue();
+        }
+        return idNode.asText();
     }
 
     private void shutdown() {
@@ -337,4 +508,22 @@ public class McpServer {
             }
         }));
     }
+
+    // ---------------------------------------------------------------
+    // Internal definition records
+    // ---------------------------------------------------------------
+
+    private record ResourceDefinition(
+            String uri,
+            String name,
+            String description,
+            String mimeType,
+            ToolHandler handler
+    ) {}
+
+    private record PromptDefinition(
+            String name,
+            String description,
+            ToolHandler handler
+    ) {}
 }
