@@ -47,4 +47,7 @@ public interface McpConstants {
 
     /** Method name for the initialized notification sent by the client. */
     String METHOD_NOTIFICATIONS_INITIALIZED = "notifications/initialized";
+
+    /** Method name for the ping health check (MCP spec requirement). */
+    String METHOD_PING = "ping";
 }

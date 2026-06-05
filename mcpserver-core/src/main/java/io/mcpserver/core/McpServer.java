@@ -10,6 +10,7 @@ import io.mcpserver.core.tool.ToolHandler;
 import io.mcpserver.core.tool.ToolRegistry;
 import io.mcpserver.core.transport.JsonRpcSerializer;
 import io.mcpserver.core.transport.StdioServerTransport;
+import io.mcpserver.core.transport.Transport;
 
 import java.io.IOException;
 import java.util.List;
@@ -17,9 +18,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -42,14 +40,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class McpServer {
 
-    private final StdioServerTransport transport;
+    private final Transport transport;
     private final ToolRegistry toolRegistry;
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicBoolean executorStopped = new AtomicBoolean(false);
     private final JsonRpcSerializer serializer = JsonRpcSerializer.INSTANCE;
     private final ConcurrentMap<String, ResourceDefinition> resources = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, PromptDefinition> prompts = new ConcurrentHashMap<>();
-    private ExecutorService executor;
 
     /** Server metadata sent during initialization. */
     private final String serverName;
@@ -69,6 +65,7 @@ public class McpServer {
 
     /**
      * Creates a new MCP server with the given name, version, and shared tool registry.
+     * Uses a default {@link StdioServerTransport} for communication.
      *
      * @param serverName   the name of this server (must not be null or blank)
      * @param serverVersion the version of this server (must not be null or blank)
@@ -77,7 +74,22 @@ public class McpServer {
      * @throws IllegalArgumentException if serverName or serverVersion is blank
      */
     public McpServer(String serverName, String serverVersion, ToolRegistry toolRegistry) {
-        this.transport = new StdioServerTransport();
+        this(serverName, serverVersion, toolRegistry, new StdioServerTransport());
+    }
+
+    /**
+     * Creates a new MCP server with a custom transport layer.
+     *
+     * @param serverName   the name of this server (must not be null or blank)
+     * @param serverVersion the version of this server (must not be null or blank)
+     * @param toolRegistry the shared tool registry to use
+     * @param transport    the transport layer (e.g., {@link StdioServerTransport} or
+     *                     {@link io.mcpserver.core.transport.SseServerTransport})
+     * @throws NullPointerException     if any parameter is null
+     * @throws IllegalArgumentException if serverName or serverVersion is blank
+     */
+    public McpServer(String serverName, String serverVersion, ToolRegistry toolRegistry, Transport transport) {
+        this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.toolRegistry = Objects.requireNonNull(toolRegistry, "toolRegistry must not be null");
         this.serverName = Objects.requireNonNull(serverName, "serverName must not be null");
         this.serverVersion = Objects.requireNonNull(serverVersion, "serverVersion must not be null");
@@ -154,11 +166,6 @@ public class McpServer {
         }
 
         transport.start();
-        executor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "mcp-msg-worker");
-            t.setDaemon(true);
-            return t;
-        });
 
         System.err.println("[MCP Server] " + serverName + " v" + serverVersion + " started");
         System.err.println("[MCP Server] Registered " + toolRegistry.toolCount() + " tools, "
@@ -171,8 +178,7 @@ public class McpServer {
                     break;
                 }
 
-                final String requestLine = line;
-                executor.submit(() -> processMessage(requestLine));
+                processMessage(line);
             }
         } finally {
             shutdown();
@@ -221,6 +227,13 @@ public class McpServer {
     }
 
     private void handleRequest(JsonNode requestNode) throws IOException {
+        // Validate jsonrpc version per JSON-RPC 2.0 spec
+        JsonNode versionNode = requestNode.get("jsonrpc");
+        if (versionNode == null || !"2.0".equals(versionNode.asText())) {
+            Object id = extractId(requestNode.get("id"));
+            sendErrorResponse(id, -32600, "Invalid Request: jsonrpc must be '2.0'", null);
+            return;
+        }
         JsonNode methodNode = requestNode.get("method");
         if (methodNode == null) {
             Object id = extractId(requestNode.get("id"));
@@ -253,6 +266,9 @@ public class McpServer {
             case McpConstants.METHOD_PROMPTS_GET:
                 handlePromptsGet(id, params);
                 break;
+            case McpConstants.METHOD_PING:
+                sendResultResponse(id, JsonNodeFactory.instance.objectNode());
+                break;
             default:
                 sendErrorResponse(id, -32601, "Method not found: " + method, null);
                 break;
@@ -260,7 +276,11 @@ public class McpServer {
     }
 
     private void handleNotification(JsonNode notificationNode) {
-        String method = notificationNode.get("method").asText();
+        JsonNode methodNode = notificationNode.get("method");
+        if (methodNode == null) {
+            return;
+        }
+        String method = methodNode.asText();
         if (McpConstants.METHOD_NOTIFICATIONS_INITIALIZED.equals(method)) {
             System.err.println("[MCP Server] Client initialization complete");
         }
@@ -279,11 +299,23 @@ public class McpServer {
             );
         }
 
-        McpCapabilities capabilities = McpCapabilities.builder()
-                .addTool("built-in")
-                .addResource("static")
-                .addPrompt("static")
-                .build();
+        McpCapabilities.Builder capabilitiesBuilder = McpCapabilities.builder();
+        if (toolRegistry.toolCount() > 0) {
+            capabilitiesBuilder.addTool("built-in");
+        }
+        if (!resources.isEmpty()) {
+            capabilitiesBuilder.addResource("static");
+        }
+        if (!prompts.isEmpty()) {
+            capabilitiesBuilder.addPrompt("static");
+        }
+        McpCapabilities capabilities = capabilitiesBuilder.build();
+
+        String clientVersion = initParams.protocolVersion();
+        if (!McpConstants.MCP_PROTOCOL_VERSION.equals(clientVersion)) {
+            System.err.println("[MCP Server] Protocol version mismatch: client="
+                    + clientVersion + ", server=" + McpConstants.MCP_PROTOCOL_VERSION);
+        }
 
         InitializeResultParams resultParams = new InitializeResultParams(
                 McpConstants.MCP_PROTOCOL_VERSION,
@@ -293,7 +325,7 @@ public class McpServer {
         );
 
         sendResultResponse(id, resultParams);
-        System.err.println("[MCP Server] Initialized with protocol " + initParams.protocolVersion());
+        System.err.println("[MCP Server] Initialized with protocol " + clientVersion);
     }
 
     private void handleToolsList(Object id) throws IOException {
@@ -317,36 +349,32 @@ public class McpServer {
     }
 
     private void handleToolsCall(Object id, JsonNode params) throws IOException {
-        if (params == null || !params.has("name")) {
+        if (params == null) {
             sendErrorResponse(id, -32602, "Missing required parameter: name", null);
             return;
         }
 
-        String toolName = params.get("name").asText();
-        JsonNode arguments = params.has("arguments") ? params.get("arguments") : null;
+        McpToolCall toolCall = serializer.deserialize(params.toString(), McpToolCall.class);
+        if (toolCall.name() == null || toolCall.name().isBlank()) {
+            sendErrorResponse(id, -32602, "Missing required parameter: name", null);
+            return;
+        }
 
-        ToolDefinition toolDef = toolRegistry.getTool(toolName);
+        ToolDefinition toolDef = toolRegistry.getTool(toolCall.name());
         if (toolDef == null) {
-            sendErrorResponse(id, -32602, "Unknown tool: " + toolName, null);
+            sendErrorResponse(id, -32602, "Unknown tool: " + toolCall.name(), null);
             return;
         }
 
         try {
-            JsonNode result = toolDef.handler().execute(arguments);
-
-            // Wrap in MCP tool result format: content array with text items
-            ObjectNode response = JsonNodeFactory.instance.objectNode();
-            ArrayNode content = response.putArray("content");
-
-            ObjectNode textItem = content.addObject();
-            textItem.put("type", "text");
-            textItem.set("text", result != null ? result : JsonNodeFactory.instance.textNode(""));
-
-            response.put("isError", false);
-
-            sendResultResponse(id, response);
+            JsonNode result = toolDef.handler().execute(toolCall.arguments());
+            McpToolResult toolResult = McpToolResult.text(
+                    result != null ? result : JsonNodeFactory.instance.textNode("")
+            );
+            sendResultResponse(id, toolResult);
         } catch (Exception e) {
-            sendErrorResponse(id, -32603, "Tool execution failed: " + e.getMessage(), null);
+            sendErrorResponse(id, -32603, "Tool execution failed",
+                    JsonNodeFactory.instance.textNode(e.getMessage() != null ? e.getMessage() : ""));
         }
     }
 
@@ -394,7 +422,8 @@ public class McpServer {
 
             sendResultResponse(id, result);
         } catch (Exception e) {
-            sendErrorResponse(id, -32603, "Resource read failed: " + e.getMessage(), null);
+            sendErrorResponse(id, -32603, "Resource read failed",
+                    JsonNodeFactory.instance.textNode(e.getMessage() != null ? e.getMessage() : ""));
         }
     }
 
@@ -444,7 +473,8 @@ public class McpServer {
 
             sendResultResponse(id, result);
         } catch (Exception e) {
-            sendErrorResponse(id, -32603, "Prompt get failed: " + e.getMessage(), null);
+            sendErrorResponse(id, -32603, "Prompt get failed",
+                    JsonNodeFactory.instance.textNode(e.getMessage() != null ? e.getMessage() : ""));
         }
     }
 
@@ -485,19 +515,6 @@ public class McpServer {
 
     private void shutdown() {
         transport.stop();
-
-        if (executor != null && executorStopped.compareAndSet(false, true)) {
-            executor.shutdown();
-            try {
-                if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
-                    executor.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                executor.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }
-
         System.err.println("[MCP Server] Shutdown complete");
     }
 

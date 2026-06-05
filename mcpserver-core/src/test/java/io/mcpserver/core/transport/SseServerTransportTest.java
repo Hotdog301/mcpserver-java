@@ -170,7 +170,7 @@ class SseServerTransportTest {
         @DisplayName("Should return 202 Accepted for POST /message")
         void shouldReturn202ForPost() throws Exception {
             HttpURLConnection sseConn = connect("http://localhost:" + port + "/sse", "GET");
-            String endpoint = readEndpoint(sseConn);
+            String endpoint = readEndpointSse(sseConn);
 
             String body = "{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"id\":1}";
             HttpURLConnection msgConn = connect("http://localhost:" + port + endpoint, "POST");
@@ -181,11 +181,9 @@ class SseServerTransportTest {
             String response = new String(msgConn.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             assertThat(response).isEqualTo("accepted");
 
-            Thread.sleep(200);
-            assertThat(receivedMessages).contains(body);
-
             msgConn.disconnect();
             sseConn.disconnect();
+            assertThat(receivedMessages).contains(body);
         }
 
         @Test
@@ -199,7 +197,7 @@ class SseServerTransportTest {
         @DisplayName("Should not call handler for empty body")
         void shouldNotCallHandlerForEmptyBody() throws Exception {
             HttpURLConnection sseConn = connect("http://localhost:" + port + "/sse", "GET");
-            String endpoint = readEndpoint(sseConn);
+            String endpoint = readEndpointSse(sseConn);
 
             receivedMessages.clear();
             HttpURLConnection msgConn = connect("http://localhost:" + port + endpoint, "POST");
@@ -207,11 +205,9 @@ class SseServerTransportTest {
             msgConn.getOutputStream().write("".getBytes(StandardCharsets.UTF_8));
             assertThat(msgConn.getResponseCode()).isEqualTo(202);
 
-            Thread.sleep(200);
-            assertThat(receivedMessages).isEmpty();
-
             msgConn.disconnect();
             sseConn.disconnect();
+            assertThat(receivedMessages).isEmpty();
         }
     }
 

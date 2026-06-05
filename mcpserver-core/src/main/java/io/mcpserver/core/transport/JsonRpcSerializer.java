@@ -36,6 +36,23 @@ public final class JsonRpcSerializer {
     }
 
     /**
+     * Returns the shared ObjectMapper used by this serializer.
+     * Callers may customize the mapper during application startup
+     * before any MCP messages are processed.
+     *
+     * <p>Example:
+     * <pre>{@code
+     * JsonRpcSerializer.getMapper()
+     *     .registerModule(new JavaTimeModule());
+     * }</pre>
+     *
+     * @return the shared ObjectMapper instance
+     */
+    public static ObjectMapper getMapper() {
+        return MAPPER;
+    }
+
+    /**
      * Serializes the given message (a JSON-RPC request, response, notification,
      * or any other POJO) to its JSON string representation.
      *
@@ -135,6 +152,9 @@ public final class JsonRpcSerializer {
         if (node == null) {
             return false;
         }
-        return node.has("method") && !node.has("id");
+        // A valid JSON-RPC 2.0 notification has a "method" field, no "id",
+        // and must NOT contain "result" or "error" (those belong to responses).
+        return node.has("method") && !node.has("id")
+                && !node.has("result") && !node.has("error");
     }
 }

@@ -34,7 +34,7 @@ Add one dependency, annotate a method with `@McpTool`, and it's immediately disc
 ```
 
 ```java
-@McpTool(description = "查询当前用户信息")
+@McpTool(description = "Get user profile by ID")
 public UserInfo getUserInfo(Long userId) {
     return userService.findById(userId);
 }
@@ -48,10 +48,12 @@ public UserInfo getUserInfo(Long userId) {
 
 - **⚡ Zero code** — Auto-discovers `@McpTool` beans at startup, no wiring
 - **🔌 Plug-and-play** — Works with Claude Desktop, Cursor, Copilot, any MCP client
-- **📦 Supports all params** — String, numbers, JSON, POJOs — auto-converted
+- **🌐 Dual transport** — Supports **stdio** (subprocess mode) and **HTTP+SSE** (remote mode)
+- **🏓 Ping support** — Implements MCP `ping` health-check for client keep-alive
+- **📦 Full type support** — String, numbers, JSON, POJOs — auto-converted
 - **🏃‍♂️ Dev mode** — `mvn mcpserver:dev-run` for quick testing without Spring Boot
 - **🧩 Modular** — Core, Starter, Plugin. Use what you need
-- **🔒 JSON-RPC 2.0** — Standard protocol, no custom transports
+- **🔒 JSON-RPC 2.0** — Full support for tools, resources, and prompts
 - **🧪 Testable** — Core module has zero Spring dependencies
 
 ---
@@ -60,9 +62,9 @@ public UserInfo getUserInfo(Long userId) {
 
 | Module | Description | Spring Required |
 |--------|------------|:---:|
-| **mcpserver-core** | JSON-RPC 2.0 over stdio, tool registry, protocol handlers | ❌ |
-| **mcpserver-spring-boot-starter** | Auto-configuration, `@McpTool` annotation, bean discovery | ✅ |
-| **mcpserver-maven-plugin** | Dev server runner (`mvn mcpserver:dev-run`) | ❌ |
+| **mcpserver-core** | Core protocol: JSON-RPC 2.0, stdio & SSE transports, tool/resource/prompt registry | ❌ |
+| **mcpserver-spring-boot-starter** | Spring Boot auto-config, `@McpTool` scanning, `@McpComponent` support | ✅ |
+| **mcpserver-maven-plugin** | Dev server (`mvn mcpserver:dev-run`) and dependency injector (`mvn mcpserver:add-mcp`) | ❌ |
 
 ---
 
@@ -72,15 +74,20 @@ public UserInfo getUserInfo(Long userId) {
 ┌──────────────────────────────────────────┐
 │             MCP Client                   │
 │   (Claude Desktop / Cursor / Copilot)    │
-└──────────────┬──────────┬────────────────┘
-               │ stdin    │ stdout
-               ▼          ▼
+└────────┬─────────────┬───────────────────┘
+   stdin/stdio    │   HTTP+SSE
+   stdout         │
+         ▼        ▼
 ┌──────────────────────────────────────────┐
-│           StdioServerTransport           │
-│       (JSON-RPC 2.0 line-delimited)      │
-└──────────────────┬───────────────────────┘
-                   │
-┌──────────────────▼───────────────────────┐
+│    Transport (interface)                 │
+│  ┌──────────────────┐ ┌───────────────┐  │
+│  │ StdioTransport   │ │ SseTransport  │  │
+│  │ (stdin/stdout)   │ │ (HTTP+SSE)    │  │
+│  └────────┬─────────┘ └──────┬────────┘  │
+│           │                  │           │
+└───────────┼──────────────────┼───────────┘
+            ▼                  ▼
+┌──────────────────────────────────────────┐
 │              McpServer                   │
 │  ┌─────────────┐  ┌───────────────────┐  │
 │  │  Protocol   │  │  ToolRegistry     │  │
@@ -92,12 +99,24 @@ public UserInfo getUserInfo(Long userId) {
 │     Spring Boot (AutoConfiguration)      │
 │  ┌──────────────┐  ┌──────────────────┐  │
 │  │ @McpTool     │  │ McpToolRegistrar │  │
-│  │ annotations  │  │ (Reflection)     │  │
+│  │ @McpComponent│  │ (Reflection)     │  │
 │  └──────────────┘  └──────────────────┘  │
 └──────────────────────────────────────────┘
 ```
 
 ---
+
+## 📦 Getting the Library
+
+> **⚠️ Note:** This project has not been published to Maven Central yet. You need to build it locally first.
+
+```bash
+git clone https://github.com/Hotdog301/mcpserver-java.git
+cd mcpserver-java
+mvn install -DskipTests
+```
+
+Then add the dependency to your project (use the actual version from `pom.xml`):
 
 ## 🔧 Quick Start
 
@@ -115,17 +134,17 @@ public UserInfo getUserInfo(Long userId) {
 
 ```java
 import io.mcpserver.starter.annotation.McpTool;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 @Service
 public class WeatherService {
 
-    @McpTool(description = "获取指定城市的天气信息")
+    @McpTool(description = "Get weather for a city")
     public String getWeather(String city) {
-        // your logic here
         return "Sunny, 25°C";
     }
 
-    @McpTool(description = "计算两个日期之间的天数")
+    @McpTool(description = "Calculate days between two dates")
     public long daysBetween(@JsonProperty("start") String start,
                             @JsonProperty("end") String end) {
         return ChronoUnit.DAYS.between(
@@ -134,9 +153,21 @@ public class WeatherService {
 }
 ```
 
+**Supported method signatures:**
+
+| Parameter type | Behavior |
+|----------------|----------|
+| No parameters | Invoked directly |
+| `String` / `int` / `long` / `double` / `boolean` | Auto-converted from JSON |
+| `JsonNode` | Receives raw arguments as JSON tree |
+| `Map<String, Object>` | Arguments deserialized to Map |
+| Multiple parameters | Each resolved by name from arguments object |
+| `@JsonProperty("name")` | Overrides parameter name |
+
 ### 3️⃣ Configure your MCP client
 
-**Claude Desktop** (`claude_desktop_config.json`):
+**stdio mode** (local clients like Claude Desktop / Cursor):
+
 ```json
 {
   "mcpServers": {
@@ -148,7 +179,17 @@ public class WeatherService {
 }
 ```
 
-**Cursor / VS Code Copilot**: Point to your compiled Spring Boot jar.
+**HTTP+SSE mode** (remote services):
+
+```json
+{
+  "mcpServers": {
+    "my-app": {
+      "url": "http://localhost:8080/sse"
+    }
+  }
+}
+```
 
 ### 4️⃣ Run
 
@@ -160,6 +201,38 @@ Connect with your MCP client — your tools are ready.
 
 ---
 
+## 🌐 Using SSE Transport
+
+In addition to the default stdio transport, `McpServer` supports HTTP+SSE transport for remote deployment and containerized environments.
+
+### Standalone SSE Server (No Spring Boot)
+
+```java
+public class SseMcpServer {
+    public static void main(String[] args) throws Exception {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register("echo", "Echo", null,
+            args -> JsonNodeFactory.instance.textNode("Hello SSE!"));
+
+        SseServerTransport transport = new SseServerTransport(8080, System.out::println);
+        McpServer server = new McpServer("sse-server", "1.0.0", registry, transport);
+        McpServer.registerShutdownHook(server);
+        server.start();
+    }
+}
+```
+
+The SSE transport supports both Pull mode (`McpServer`-driven event loop) and Push mode (via `messageHandler` callback).
+
+### SSE Protocol Flow
+
+1. Client `GET /sse` → Server keeps connection open, sends events
+2. Server sends `event: endpoint` with POST URI `data: /message?sessionId=xxx`
+3. Client `POST /message` with JSON-RPC messages
+4. Server pushes responses through the SSE connection
+
+---
+
 ## 🧪 Dev Mode (No Spring Boot)
 
 For non-Spring-Boot projects or quick testing:
@@ -168,7 +241,21 @@ For non-Spring-Boot projects or quick testing:
 mvn mcpserver:dev-run
 ```
 
-This starts a bare MCP server that reads from stdin and writes to stdout — perfect for testing with `npx @modelcontextprotocol/inspector`.
+This starts a bare stdio MCP server — perfect for testing with `npx @modelcontextprotocol/inspector`.
+
+### Custom Dev Tools
+
+Extend `DevMcpMojo` and override `registerDevTools()` to add tooling:
+
+```java
+public class MyDevMojo extends DevMcpMojo {
+    @Override
+    protected void registerDevTools(ToolRegistry registry) {
+        registry.register("ping", "Health check", null,
+            args -> JsonNodeFactory.instance.textNode("pong"));
+    }
+}
+```
 
 ---
 
@@ -177,12 +264,24 @@ This starts a bare MCP server that reads from stdin and writes to stdout — per
 ### Application Properties
 
 ```properties
+# Enable/disable the MCP server (default: true)
+mcpserver.enabled=true
+
 # Server identity (shown during MCP initialization)
 mcpserver.name=my-custom-server
 mcpserver.version=1.0.0
+
+# Transport type: stdio (subprocess mode) or sse (HTTP+SSE remote mode)
+mcpserver.transport-type=stdio
+
+# SSE transport port (only used when transport-type=sse, default: 3001)
+mcpserver.sse-port=3001
+
+# SSE CORS origin (only used when transport-type=sse, default: *)
+mcpserver.cors-origin=*
 ```
 
-### Customize the Server
+### Custom Server Bean
 
 ```java
 @Configuration
@@ -190,12 +289,39 @@ public class McpConfig {
 
     @Bean
     public McpServer mcpServer(ToolRegistry registry) {
-        // Override the default server with custom tools
-        McpServer server = new McpServer("custom-server", "1.0.0");
-        // Register tools programmatically
+        McpServer server = new McpServer("custom-server", "1.0.0", registry);
+        // Programmatic tool registration
         server.registerTool("ping", "Health check", null,
             args -> JsonNodeFactory.instance.textNode("pong"));
+        // Resource registration
+        server.registerResource("file:///docs/readme", "README",
+            "Project documentation", "text/markdown",
+            args -> JsonNodeFactory.instance.textNode("# MCP Server"));
+        // Prompt registration
+        server.registerPrompt("greeting", "Generate greeting",
+            args -> {
+                ArrayNode messages = JsonNodeFactory.instance.arrayNode();
+                ObjectNode msg = messages.addObject();
+                msg.put("role", "assistant");
+                msg.put("content", "Hello! I am an MCP server.");
+                return messages;
+            });
         return server;
+    }
+}
+```
+
+### Optional: @McpComponent
+
+`@McpComponent` is a class-level annotation that optionally marks which beans to scan. When omitted, all beans are scanned:
+
+```java
+@McpComponent
+@Service
+public class MyTools {
+    @McpTool(description = "My tool description")
+    public String myTool(String input) {
+        return "Processed: " + input;
     }
 }
 ```
@@ -205,7 +331,7 @@ public class McpConfig {
 ## 🧩 Maven Plugin Usage
 
 ```bash
-# Add MCP dependency to your project
+# Add MCP dependency to your project's pom.xml
 mvn mcpserver:add-mcp
 
 # Start dev MCP server
@@ -225,14 +351,22 @@ mvn mcpserver:dev-run -Dmcpserver.name=my-server
 ## 🔬 How It Works
 
 1. **Startup**: Spring Boot auto-configuration scans all beans for `@McpTool` methods
-2. **Registration**: Each annotated method becomes a `ToolDefinition` with a reflection-based handler
-3. **Listen**: `McpServer` opens stdin/stdout transport for JSON-RPC 2.0 communication
-4. **Initialize**: MCP client sends `initialize` → server responds with capabilities
-5. **Discover**: Client calls `tools/list` → gets the list of all annotated tools
-6. **Invoke**: Client calls `tools/call` with `{name, arguments}` → handler method executes
-7. **Respond**: Return value serialized to JSON and sent back as tool result
+2. **Registration**: Each annotated method becomes a `ToolDefinition` with a reflection-based handler and auto-generated JSON Schema
+3. **Transport**: `McpServer` drives the message loop through the `Transport` interface (stdio or SSE)
+4. **Initialize**: MCP client sends `initialize` → server responds with protocol version and capabilities
+5. **Discover**: Client calls `tools/list`, `resources/list`, `prompts/list` to get capability listings
+6. **Invoke**: Client calls `tools/call` → arguments auto-converted to Java types → method executed via reflection
+7. **Respond**: Return value serialized to JSON, sent back as MCP tool result (with `content` array and `isError` flag)
 
-All communication is line-delimited JSON over stdio — the standard MCP transport.
+All JSON-RPC 2.0 communication is handled by `JsonRpcSerializer` based on Jackson.
+
+You can customize the underlying `ObjectMapper` via `JsonRpcSerializer.getMapper()`:
+
+```java
+// Register a custom Jackson module at startup
+JsonRpcSerializer.getMapper()
+    .registerModule(new JavaTimeModule());
+```
 
 ---
 

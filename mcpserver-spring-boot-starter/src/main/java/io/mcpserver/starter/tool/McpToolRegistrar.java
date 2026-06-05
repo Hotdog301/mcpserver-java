@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.mcpserver.core.transport.JsonRpcSerializer;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -52,7 +53,7 @@ import java.util.Map;
 public class McpToolRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(McpToolRegistrar.class);
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonRpcSerializer.getMapper();
 
     private final ApplicationContext applicationContext;
     private final ToolRegistry toolRegistry;
@@ -161,7 +162,13 @@ public class McpToolRegistrar {
             ObjectNode propSchema = properties.putObject(paramName);
             propSchema.put("type", mapTypeToJsonSchema(paramType));
 
-            required.add(paramName);
+            // Parameters with flexible types (JsonNode, Map, Object) are not
+            // marked as required since they can accept any value including null.
+            if (paramType != JsonNode.class
+                    && paramType != Map.class
+                    && paramType != Object.class) {
+                required.add(paramName);
+            }
         }
 
         return schema;

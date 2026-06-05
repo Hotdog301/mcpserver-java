@@ -4,13 +4,16 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -33,9 +36,15 @@ import java.util.function.Consumer;
  *   <li>Server pushes responses/events back through the SSE connection</li>
  * </ol>
  *
- * <p>This transport is not thread-safe for reads; callers should coordinate access.</p>
+ * <p>This transport supports two usage modes:</p>
+ * <ul>
+ *   <li><b>Push mode</b>: incoming POST messages are forwarded to the
+ *       {@code messageHandler} callback (useful for standalone integration)</li>
+ *   <li><b>Pull mode</b>: {@link #readLine()} blocks until the next message is
+ *       available, allowing {@link io.mcpserver.core.McpServer} to drive the loop</li>
+ * </ul>
  */
-public class SseServerTransport {
+public class SseServerTransport implements Transport {
 
     private static final String SSE_ENDPOINT = "/sse";
     private static final String MESSAGE_ENDPOINT = "/message";
@@ -44,11 +53,21 @@ public class SseServerTransport {
     private final int port;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final Consumer<String> messageHandler;
-    private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
+    private final ExecutorService executor = Executors.newFixedThreadPool(
+            Math.max(4, Runtime.getRuntime().availableProcessors() * 2), r -> {
         Thread t = new Thread(r, "mcp-sse-worker");
         t.setDaemon(true);
         return t;
     });
+
+    /** Queue used for pull-based reading via {@link #readLine()}. */
+    private final LinkedBlockingQueue<String> messageQueue = new LinkedBlockingQueue<>(1024);
+
+    /** Maximum request body size for POST messages (1 MB). */
+    private static final int MAX_MESSAGE_SIZE = 1024 * 1024;
+
+    /** CORS origin header value. Defaults to "*". */
+    private volatile String corsOrigin = "*";
 
     private volatile SseConnection currentConnection;
     private volatile String currentSessionId;
@@ -61,6 +80,16 @@ public class SseServerTransport {
 
     public void setOnSessionEstablished(Runnable callback) {
         this.onSessionEstablished = callback;
+    }
+
+    /**
+     * Sets the CORS origin header value for both SSE and message endpoints.
+     *
+     * @param corsOrigin the origin value (e.g., "*", "http://example.com");
+     *                   must not be null
+     */
+    public void setCorsOrigin(String corsOrigin) {
+        this.corsOrigin = Objects.requireNonNull(corsOrigin, "corsOrigin must not be null");
     }
 
     /**
@@ -81,8 +110,21 @@ public class SseServerTransport {
     }
 
     /**
+     * Creates a new SSE server transport without a push-mode message handler.
+     * Use this constructor when the transport is driven by {@link #readLine()}
+     * (e.g., paired with {@link io.mcpserver.core.McpServer}).
+     *
+     * @param port the HTTP port to bind to (0 for random)
+     * @throws IOException if the HTTP server cannot be created
+     */
+    public SseServerTransport(int port) throws IOException {
+        this(port, msg -> {});
+    }
+
+    /**
      * Starts the HTTP server and begins accepting connections.
      */
+    @Override
     public void start() {
         if (running.getAndSet(true)) {
             throw new IllegalStateException("Server is already running");
@@ -93,13 +135,17 @@ public class SseServerTransport {
 
     /**
      * Stops the HTTP server and releases all resources.
+     *
+     * <p>Closes all active connections (both input and output) to unblock any
+     * pending reads before stopping the HTTP server.</p>
      */
+    @Override
     public void stop() {
         if (!running.getAndSet(false)) {
             return;
         }
 
-        // Close any active SSE connection
+        // Close any active SSE connection (both input and output)
         SseConnection conn = currentConnection;
         if (conn != null) {
             try {
@@ -144,6 +190,7 @@ public class SseServerTransport {
      *
      * @return {@code true} if running
      */
+    @Override
     public boolean isRunning() {
         return running.get();
     }
@@ -165,6 +212,44 @@ public class SseServerTransport {
      */
     public String getCurrentSessionId() {
         return currentSessionId;
+    }
+
+    /**
+     * Reads the next JSON-RPC message from the internal queue.
+     *
+     * <p>Blocks until a message is available or the transport is stopped.
+     * Returns {@code null} when the transport has been stopped, allowing
+     * the caller to break out of a read loop.</p>
+     *
+     * @return the JSON string, or {@code null} if stopped
+     * @throws IOException if an unexpected error occurs
+     */
+    @Override
+    public String readLine() throws IOException {
+        try {
+            while (running.get()) {
+                String message = messageQueue.poll(500, TimeUnit.MILLISECONDS);
+                if (message != null) {
+                    return message;
+                }
+            }
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    /**
+     * Sends a JSON-RPC response through the SSE connection.
+     *
+     * @param message the message to send (will be serialized by {@link JsonRpcSerializer})
+     * @throws IOException if serialization or send fails
+     */
+    @Override
+    public void sendMessage(Object message) throws IOException {
+        String json = JsonRpcSerializer.INSTANCE.serialize(message);
+        sendEvent("event: message\ndata: " + json + "\n\n");
     }
 
     // ---------------------------------------------------------------
@@ -190,10 +275,11 @@ public class SseServerTransport {
         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
         exchange.getResponseHeaders().add("Cache-Control", "no-cache");
         exchange.getResponseHeaders().add("Connection", "keep-alive");
-        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", corsOrigin);
 
         OutputStream out = exchange.getResponseBody();
-        SseConnection conn = new SseConnection(sessionId, out);
+        InputStream in = exchange.getRequestBody();
+        SseConnection conn = new SseConnection(sessionId, out, in);
 
         // Replace any previous connection
         SseConnection previous = currentConnection;
@@ -210,7 +296,11 @@ public class SseServerTransport {
 
         Runnable listener = onSessionEstablished;
         if (listener != null) {
-            listener.run();
+            try {
+                listener.run();
+            } catch (Exception e) {
+                System.err.println("[MCP SSE Transport] onSessionEstablished callback error: " + e.getMessage());
+            }
         }
 
         System.err.println("[MCP SSE Transport] Client connected (session=" + sessionId + ")");
@@ -220,14 +310,14 @@ public class SseServerTransport {
 
         conn.send("event: endpoint\ndata: " + messageUri + "\n\n");
 
-        // Block until the connection closes
+        // Block until the connection closes.
+        // When the client disconnects, read() returns -1 and the loop exits.
+        // During shutdown, stop() closes the connection's input stream which
+        // causes read() to throw IOException, caught below.
         try {
-            // Keep the connection alive by reading from the input stream
-            // (The client closing its end will cause read() to return -1)
-            var input = exchange.getRequestBody();
             byte[] buf = new byte[4096];
             while (running.get()) {
-                int n = input.read(buf);
+                int n = in.read(buf);
                 if (n <= 0) {
                     break; // Client closed or stream interrupted
                 }
@@ -257,7 +347,7 @@ public class SseServerTransport {
 
         // Handle CORS preflight
         if ("OPTIONS".equalsIgnoreCase(method)) {
-            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", corsOrigin);
             exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
             exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
             exchange.getResponseHeaders().add("Access-Control-Max-Age", "86400");
@@ -272,14 +362,61 @@ public class SseServerTransport {
             return;
         }
 
+        // Session validation: if an SSE session is active, require sessionId match
+        String expectedSessionId = currentSessionId;
+        if (expectedSessionId != null) {
+            String query = exchange.getRequestURI().getQuery();
+            String requestSessionId = null;
+            if (query != null) {
+                for (String param : query.split("&")) {
+                    String[] pair = param.split("=", 2);
+                    if ("sessionId".equals(pair[0]) && pair.length > 1) {
+                        requestSessionId = pair[1];
+                        break;
+                    }
+                }
+            }
+            if (!expectedSessionId.equals(requestSessionId)) {
+                System.err.println("[MCP SSE Transport] Rejected POST from invalid session: "
+                        + requestSessionId + " (expected: " + expectedSessionId + ")");
+                exchange.sendResponseHeaders(403, -1);
+                exchange.close();
+                return;
+            }
+        }
+
         // Set CORS headers
-        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+        exchange.getResponseHeaders().add("Access-Control-Allow-Origin", corsOrigin);
         exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "POST, OPTIONS");
         exchange.getResponseHeaders().add("Access-Control-Allow-Headers", "Content-Type");
 
-        // Read the request body
-        byte[] bodyBytes = exchange.getRequestBody().readAllBytes();
+        // Read the request body with size limit
+        java.io.InputStream is = exchange.getRequestBody();
+        byte[] buf = new byte[MAX_MESSAGE_SIZE + 1];
+        int offset = 0;
+        int bytesRead;
+        try {
+            while (offset <= MAX_MESSAGE_SIZE
+                    && (bytesRead = is.read(buf, offset, buf.length - offset)) != -1) {
+                offset += bytesRead;
+            }
+        } finally {
+            is.close();
+        }
+        if (offset > MAX_MESSAGE_SIZE) {
+            System.err.println("[MCP SSE Transport] Request body too large (exceeded " + MAX_MESSAGE_SIZE + " bytes)");
+            exchange.sendResponseHeaders(413, -1);
+            exchange.close();
+            return;
+        }
+        byte[] bodyBytes = Arrays.copyOf(buf, offset);
         String body = new String(bodyBytes, StandardCharsets.UTF_8);
+
+        if (body.isEmpty()) {
+            exchange.sendResponseHeaders(202, 0);
+            exchange.close();
+            return;
+        }
 
         // Acknowledge receipt
         String response = "accepted";
@@ -290,8 +427,13 @@ public class SseServerTransport {
 
         exchange.close();
 
-        // Forward the message to the handler
-        if (messageHandler != null && !body.isEmpty()) {
+        // Add to queue for pull-based reading (McpServer.readLine())
+        if (!messageQueue.offer(body)) {
+            System.err.println("[MCP SSE Transport] Message queue full (capacity=1024), dropping message");
+        }
+
+        // Also invoke the callback for push-based integration
+        if (messageHandler != null) {
             messageHandler.accept(body);
         }
     }
@@ -301,16 +443,18 @@ public class SseServerTransport {
     // ---------------------------------------------------------------
 
     /**
-     * Wraps an SSE connection's output stream.
+     * Wraps an SSE connection's input and output streams.
      */
     private static class SseConnection {
         private final String sessionId;
         private final OutputStream output;
+        private final InputStream input;
         private volatile boolean closed;
 
-        SseConnection(String sessionId, OutputStream output) {
+        SseConnection(String sessionId, OutputStream output, InputStream input) {
             this.sessionId = sessionId;
             this.output = output;
+            this.input = input;
         }
 
         synchronized void send(String data) throws IOException {
@@ -326,7 +470,14 @@ public class SseServerTransport {
                 return;
             }
             closed = true;
-            output.close();
+            try {
+                input.close();
+            } catch (IOException ignored) {
+            }
+            try {
+                output.close();
+            } catch (IOException ignored) {
+            }
         }
 
         String sessionId() {

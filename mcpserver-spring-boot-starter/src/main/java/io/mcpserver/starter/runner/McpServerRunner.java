@@ -1,25 +1,29 @@
 package io.mcpserver.starter.runner;
 
 import io.mcpserver.core.McpServer;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 
 /**
- * {@link ApplicationRunner} that starts the MCP server on a separate daemon
+ * {@link ApplicationRunner} that starts the MCP server on a separate
  * thread after the Spring Boot application has fully started.
  *
  * <p>This runner performs the following actions:</p>
  * <ol>
  *   <li>Registers a JVM shutdown hook for graceful termination via
  *       {@link McpServer#registerShutdownHook(McpServer)}</li>
- *   <li>Starts the MCP server in a dedicated daemon thread named
+ *   <li>Starts the MCP server in a dedicated thread named
  *       {@code "mcp-server"}</li>
+ *   <li>Stops the server via {@link jakarta.annotation.PreDestroy @PreDestroy}
+ *       when the Spring application context closes</li>
  * </ol>
  *
- * <p>The server runs in a daemon thread so that it does not prevent the JVM
- * from exiting when the main application thread completes.</p>
+ * <p>The server thread is a non-daemon thread to keep the JVM alive in
+ * non-web applications. Clean shutdown is handled by the {@code @PreDestroy}
+ * method and the JVM shutdown hook.</p>
  */
 public class McpServerRunner implements ApplicationRunner {
 
@@ -54,12 +58,21 @@ public class McpServerRunner implements ApplicationRunner {
                 server.start();
             } catch (Exception e) {
                 log.error("MCP server terminated with an error", e);
+                server.stop();
             }
         }, "mcp-server");
 
-        serverThread.setDaemon(true);
         serverThread.start();
+    }
 
-        log.info("MCP server thread started (daemon: {})", serverThread.isDaemon());
+    /**
+     * Stops the MCP server when the Spring application context is closed.
+     * This ensures clean shutdown in non-web applications where the MCP
+     * server thread keeps the JVM alive.
+     */
+    @PreDestroy
+    public void destroy() {
+        log.info("Stopping MCP server...");
+        server.stop();
     }
 }

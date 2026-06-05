@@ -3,6 +3,7 @@ package io.mcpserver.core;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.mcpserver.core.model.McpConstants;
 import io.mcpserver.core.tool.ToolHandler;
@@ -377,6 +378,175 @@ class McpProtocolTest {
     }
 
     // ── Full session ──
+
+    // ── Resources ──
+
+    @Nested
+    @DisplayName("resources")
+    class ResourceTests {
+
+        @BeforeEach
+        void setUpServer() throws Exception {
+            initServer("ResourceServer", "1.0.0");
+        }
+
+        @Test
+        @DisplayName("Should list registered resources")
+        void shouldListResources() throws Exception {
+            server.registerResource("file:///docs/readme", "README",
+                    "Project readme", "text/markdown",
+                    args -> JsonNodeFactory.instance.textNode("# MCP Server"));
+
+            send(jsonRpcRequest(1, McpConstants.METHOD_RESOURCES_LIST));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("result")).isTrue();
+            JsonNode resources = response.get("result").get("resources");
+            assertThat(resources).isNotNull();
+            assertThat(resources.size()).isEqualTo(1);
+            assertThat(resources.get(0).get("uri").asText()).isEqualTo("file:///docs/readme");
+            assertThat(resources.get(0).get("name").asText()).isEqualTo("README");
+            assertThat(resources.get(0).get("description").asText()).isEqualTo("Project readme");
+            assertThat(resources.get(0).get("mimeType").asText()).isEqualTo("text/markdown");
+        }
+
+        @Test
+        @DisplayName("Should read registered resource")
+        void shouldReadResource() throws Exception {
+            server.registerResource("file:///docs/readme", "README",
+                    null, null,
+                    args -> JsonNodeFactory.instance.textNode("Hello Resource!"));
+
+            ObjectNode params = JsonNodeFactory.instance.objectNode();
+            params.put("uri", "file:///docs/readme");
+            send(jsonRpcRequest(2, McpConstants.METHOD_RESOURCES_READ, params));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("result").get("contents").isArray()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Should return error for unknown resource")
+        void shouldReturnErrorForUnknownResource() throws Exception {
+            ObjectNode params = JsonNodeFactory.instance.objectNode();
+            params.put("uri", "file:///unknown");
+            send(jsonRpcRequest(3, McpConstants.METHOD_RESOURCES_READ, params));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("error")).isTrue();
+            assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
+        }
+
+        @Test
+        @DisplayName("Should return error when uri is missing")
+        void shouldReturnErrorWhenUriMissing() throws Exception {
+            send(jsonRpcRequest(4, McpConstants.METHOD_RESOURCES_READ));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("error")).isTrue();
+            assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
+        }
+    }
+
+    // ── Prompts ──
+
+    @Nested
+    @DisplayName("prompts")
+    class PromptTests {
+
+        @BeforeEach
+        void setUpServer() throws Exception {
+            initServer("PromptServer", "1.0.0");
+        }
+
+        @Test
+        @DisplayName("Should list registered prompts")
+        void shouldListPrompts() throws Exception {
+            server.registerPrompt("greeting", "Generates a greeting",
+                    args -> {
+                        ArrayNode messages = JsonNodeFactory.instance.arrayNode();
+                        ObjectNode msg = messages.addObject();
+                        msg.put("role", "assistant");
+                        msg.put("content", "Hello!");
+                        return messages;
+                    });
+
+            send(jsonRpcRequest(1, McpConstants.METHOD_PROMPTS_LIST));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("result")).isTrue();
+            JsonNode prompts = response.get("result").get("prompts");
+            assertThat(prompts).isNotNull();
+            assertThat(prompts.size()).isEqualTo(1);
+            assertThat(prompts.get(0).get("name").asText()).isEqualTo("greeting");
+        }
+
+        @Test
+        @DisplayName("Should get registered prompt")
+        void shouldGetPrompt() throws Exception {
+            server.registerPrompt("greeting", null,
+                    args -> {
+                        ArrayNode messages = JsonNodeFactory.instance.arrayNode();
+                        ObjectNode msg = messages.addObject();
+                        msg.put("role", "assistant");
+                        msg.put("content", "Hello!");
+                        return messages;
+                    });
+
+            ObjectNode params = JsonNodeFactory.instance.objectNode();
+            params.put("name", "greeting");
+            send(jsonRpcRequest(2, McpConstants.METHOD_PROMPTS_GET, params));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("result").get("messages").isArray()).isTrue();
+        }
+
+        @Test
+        @DisplayName("Should return error for unknown prompt")
+        void shouldReturnErrorForUnknownPrompt() throws Exception {
+            ObjectNode params = JsonNodeFactory.instance.objectNode();
+            params.put("name", "nonexistent");
+            send(jsonRpcRequest(3, McpConstants.METHOD_PROMPTS_GET, params));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("error")).isTrue();
+            assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
+        }
+
+        @Test
+        @DisplayName("Should return error when name is missing")
+        void shouldReturnErrorWhenNameMissing() throws Exception {
+            send(jsonRpcRequest(4, McpConstants.METHOD_PROMPTS_GET));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("error")).isTrue();
+            assertThat(response.get("error").get("code").asInt()).isEqualTo(-32602);
+        }
+    }
+
+    // ── Ping ──
+
+    @Nested
+    @DisplayName("ping")
+    class PingTests {
+
+        @BeforeEach
+        void setUpServer() throws Exception {
+            initServer("PingServer", "1.0.0");
+        }
+
+        @Test
+        @DisplayName("Should respond to ping with success")
+        void shouldRespondToPing() throws Exception {
+            send(jsonRpcRequest(1, McpConstants.METHOD_PING));
+            JsonNode response = readResponse();
+
+            assertThat(response.has("result")).isTrue();
+            assertThat(response.get("id").asLong()).isEqualTo(1);
+        }
+    }
 
     @Nested
     @DisplayName("Full Session Flow")

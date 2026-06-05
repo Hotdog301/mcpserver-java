@@ -10,3 +10,6 @@ target/
 .project
 .classpath
 *.log
+
+# jqwik test database
+.jqwik-database

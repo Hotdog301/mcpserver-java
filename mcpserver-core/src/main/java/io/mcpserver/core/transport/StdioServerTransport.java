@@ -18,7 +18,7 @@ import java.nio.charset.StandardCharsets;
  * <p>The transport is not thread-safe; calls to {@link #readLine()} and
  * {@link #sendMessage(Object)} should be coordinated externally.</p>
  */
-public class StdioServerTransport {
+public class StdioServerTransport implements Transport {
 
     private final BufferedReader reader;
     private volatile boolean running;
@@ -35,6 +35,7 @@ public class StdioServerTransport {
     /**
      * Starts the transport, marking it as running and ready to process messages.
      */
+    @Override
     public void start() {
         this.running = true;
     }
@@ -45,6 +46,7 @@ public class StdioServerTransport {
      * <p>After calling this method the transport is considered shut down and
      * should not be used for further communication.</p>
      */
+    @Override
     public void stop() {
         this.running = false;
         try {
@@ -74,6 +76,7 @@ public class StdioServerTransport {
      * @return the JSON string, or {@code null} if the stream has reached EOF
      * @throws IOException if an I/O error occurs
      */
+    @Override
     public String readLine() throws IOException {
         try {
             return reader.readLine();
@@ -90,25 +93,18 @@ public class StdioServerTransport {
      * Serializes the given message to JSON and writes it to standard output,
      * followed by a newline.
      *
-     * <p>Any serialization or I/O exception is caught and logged to
-     * {@link System#err} so that callers do not need to handle transport-level
-     * failures inline.</p>
-     *
      * @param message the message to send (will be serialized via
      *                {@link JsonRpcSerializer})
+     * @throws IOException if serialization or write fails
      */
-    public void sendMessage(Object message) {
+    @Override
+    public void sendMessage(Object message) throws IOException {
         if (!running) {
-            System.err.println("Cannot send message: transport not running");
-            return;
+            throw new IOException("Transport not running");
         }
-        try {
-            String json = JsonRpcSerializer.INSTANCE.serialize(message);
-            System.out.println(json);
-            System.out.flush();
-        } catch (IOException e) {
-            System.err.println("Error serializing / writing message: " + e.getMessage());
-        }
+        String json = JsonRpcSerializer.INSTANCE.serialize(message);
+        System.out.println(json);
+        System.out.flush();
     }
 
     /**
@@ -116,6 +112,7 @@ public class StdioServerTransport {
      *
      * @return {@code true} if the transport has been started and not yet stopped
      */
+    @Override
     public boolean isRunning() {
         return running;
     }

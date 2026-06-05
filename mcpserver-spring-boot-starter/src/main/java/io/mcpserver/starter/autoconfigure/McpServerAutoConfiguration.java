@@ -2,12 +2,16 @@ package io.mcpserver.starter.autoconfigure;
 
 import io.mcpserver.core.McpServer;
 import io.mcpserver.core.tool.ToolRegistry;
+import io.mcpserver.core.transport.SseServerTransport;
+import io.mcpserver.core.transport.StdioServerTransport;
+import io.mcpserver.core.transport.Transport;
 import io.mcpserver.starter.runner.McpServerRunner;
 import io.mcpserver.starter.tool.McpToolRegistrar;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -30,6 +34,7 @@ import org.springframework.context.annotation.Bean;
  */
 @AutoConfiguration
 @EnableConfigurationProperties(McpServerProperties.class)
+@ConditionalOnProperty(prefix = "mcpserver", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class McpServerAutoConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(McpServerAutoConfiguration.class);
@@ -73,12 +78,25 @@ public class McpServerAutoConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(McpServer.class)
-    public McpServer mcpServer(ToolRegistry registry, McpServerProperties properties) {
-        McpServer server = new McpServer(properties.getName(), properties.getVersion(), registry);
+    public McpServer mcpServer(ToolRegistry registry, McpServerProperties properties) throws Exception {
+        Transport transport = createTransport(properties);
+        McpServer server = new McpServer(properties.getName(), properties.getVersion(), registry, transport);
 
-        log.info("Created McpServer '{}' v{} with {} tool(s)",
-                properties.getName(), properties.getVersion(), registry.toolCount());
+        log.info("Created McpServer '{}' v{} with {} tool(s) [transport={}]",
+                properties.getName(), properties.getVersion(), registry.toolCount(), properties.getTransportType());
         return server;
+    }
+
+    private static Transport createTransport(McpServerProperties properties) throws Exception {
+        if ("sse".equalsIgnoreCase(properties.getTransportType())) {
+            SseServerTransport sse = new SseServerTransport(properties.getSsePort());
+            sse.setCorsOrigin(properties.getCorsOrigin());
+            log.info("MCP server configured with SSE transport on port {}, corsOrigin={}",
+                    properties.getSsePort(), properties.getCorsOrigin());
+            return sse;
+        }
+        log.info("MCP server configured with stdio transport");
+        return new StdioServerTransport();
     }
 
     /**
